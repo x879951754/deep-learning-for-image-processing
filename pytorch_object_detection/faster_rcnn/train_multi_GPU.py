@@ -5,14 +5,14 @@ import datetime
 import torch
 
 import transforms
-from my_dataset import VOC2012DataSet
+from my_dataset import VOCDataSet
 from backbone import resnet50_fpn_backbone
 from network_files import FasterRCNN, FastRCNNPredictor
 import train_utils.train_eval_utils as utils
 from train_utils import GroupedBatchSampler, create_aspect_ratio_groups, init_distributed_mode, save_on_master, mkdir
 
 
-def create_model(num_classes, device):
+def create_model(num_classes):
     # 如果显存很小，建议使用默认的FrozenBatchNorm2d
     # trainable_layers包括['layer4', 'layer3', 'layer2', 'layer1', 'conv1']， 5代表全部训练
     backbone = resnet50_fpn_backbone(norm_layer=torch.nn.BatchNorm2d,
@@ -21,7 +21,7 @@ def create_model(num_classes, device):
     model = FasterRCNN(backbone=backbone, num_classes=91)
     # 载入预训练模型权重
     # https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-    weights_dict = torch.load("./backbone/fasterrcnn_resnet50_fpn_coco.pth", map_location=device)
+    weights_dict = torch.load("./backbone/fasterrcnn_resnet50_fpn_coco.pth", map_location='cpu')
     missing_keys, unexpected_keys = model.load_state_dict(weights_dict, strict=False)
     if len(missing_keys) != 0 or len(unexpected_keys) != 0:
         print("missing_keys: ", missing_keys)
@@ -60,40 +60,40 @@ def main(args):
 
     # load train data set
     # VOCdevkit -> VOC2012 -> ImageSets -> Main -> train.txt
-    train_data_set = VOC2012DataSet(VOC_root, data_transform["train"], "train.txt")
+    train_dataset = VOCDataSet(VOC_root, "2012", data_transform["train"], "train.txt")
 
     # load validation data set
     # VOCdevkit -> VOC2012 -> ImageSets -> Main -> val.txt
-    val_data_set = VOC2012DataSet(VOC_root, data_transform["val"], "val.txt")
+    val_dataset = VOCDataSet(VOC_root, "2012", data_transform["val"], "val.txt")
 
     print("Creating data loaders")
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_data_set)
-        test_sampler = torch.utils.data.distributed.DistributedSampler(val_data_set)
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        test_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     else:
-        train_sampler = torch.utils.data.RandomSampler(train_data_set)
-        test_sampler = torch.utils.data.SequentialSampler(val_data_set)
+        train_sampler = torch.utils.data.RandomSampler(train_dataset)
+        test_sampler = torch.utils.data.SequentialSampler(val_dataset)
 
     if args.aspect_ratio_group_factor >= 0:
         # 统计所有图像比例在bins区间中的位置索引
-        group_ids = create_aspect_ratio_groups(train_data_set, k=args.aspect_ratio_group_factor)
+        group_ids = create_aspect_ratio_groups(train_dataset, k=args.aspect_ratio_group_factor)
         train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
     else:
         train_batch_sampler = torch.utils.data.BatchSampler(
             train_sampler, args.batch_size, drop_last=True)
 
     data_loader = torch.utils.data.DataLoader(
-        train_data_set, batch_sampler=train_batch_sampler, num_workers=args.workers,
-        collate_fn=train_data_set.collate_fn)
+        train_dataset, batch_sampler=train_batch_sampler, num_workers=args.workers,
+        collate_fn=train_dataset.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
-        val_data_set, batch_size=1,
+        val_dataset, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
-        collate_fn=train_data_set.collate_fn)
+        collate_fn=train_dataset.collate_fn)
 
     print("Creating model")
     # create model num_classes equal background + 20 classes
-    model = create_model(num_classes=args.num_classes + 1, device=device)
+    model = create_model(num_classes=args.num_classes + 1)
     model.to(device)
 
     model_without_ddp = model

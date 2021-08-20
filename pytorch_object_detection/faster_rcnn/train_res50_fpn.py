@@ -6,11 +6,12 @@ import torch
 import transforms
 from network_files import FasterRCNN, FastRCNNPredictor
 from backbone import resnet50_fpn_backbone
-from my_dataset import VOC2012DataSet
+from my_dataset import VOCDataSet
+from train_utils import GroupedBatchSampler, create_aspect_ratio_groups
 from train_utils import train_eval_utils as utils
 
 
-def create_model(num_classes, device):
+def create_model(num_classes):
     # 注意，这里的backbone默认使用的是FrozenBatchNorm2d，即不会去更新bn参数
     # 目的是为了防止batch_size太小导致效果更差(如果显存很小，建议使用默认的FrozenBatchNorm2d)
     # 如果GPU显存很大可以设置比较大的batch_size就可以将norm_layer设置为普通的BatchNorm2d
@@ -21,7 +22,7 @@ def create_model(num_classes, device):
     model = FasterRCNN(backbone=backbone, num_classes=91)
     # 载入预训练模型权重
     # https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-    weights_dict = torch.load("./backbone/fasterrcnn_resnet50_fpn_coco.pth", map_location=device)
+    weights_dict = torch.load("./backbone/fasterrcnn_resnet50_fpn_coco.pth", map_location='cpu')
     missing_keys, unexpected_keys = model.load_state_dict(weights_dict, strict=False)
     if len(missing_keys) != 0 or len(unexpected_keys) != 0:
         print("missing_keys: ", missing_keys)
@@ -55,31 +56,49 @@ def main(parser_data):
 
     # load train data set
     # VOCdevkit -> VOC2012 -> ImageSets -> Main -> train.txt
-    train_data_set = VOC2012DataSet(VOC_root, data_transform["train"], "train.txt")
+    train_dataset = VOCDataSet(VOC_root, "2012", data_transform["train"], "train.txt")
+    train_sampler = None
+
+    # 是否按图片相似高宽比采样图片组成batch
+    # 使用的话能够减小训练时所需GPU显存，默认使用
+    if args.aspect_ratio_group_factor >= 0:
+        train_sampler = torch.utils.data.RandomSampler(train_dataset)
+        # 统计所有图像高宽比例在bins区间中的位置索引
+        group_ids = create_aspect_ratio_groups(train_dataset, k=args.aspect_ratio_group_factor)
+        # 每个batch图片从同一高宽比例区间中取
+        train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
 
     # 注意这里的collate_fn是自定义的，因为读取的数据包括image和targets，不能直接使用默认的方法合成batch
     batch_size = parser_data.batch_size
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
     print('Using %g dataloader workers' % nw)
-    train_data_loader = torch.utils.data.DataLoader(train_data_set,
-                                                    batch_size=batch_size,
-                                                    shuffle=True,
-                                                    pin_memory=True,
-                                                    num_workers=nw,
-                                                    collate_fn=train_data_set.collate_fn)
+    if train_sampler:
+        # 如果按照图片高宽比采样图片，dataloader中需要使用batch_sampler
+        train_data_loader = torch.utils.data.DataLoader(train_dataset,
+                                                        batch_sampler=train_batch_sampler,
+                                                        pin_memory=True,
+                                                        num_workers=nw,
+                                                        collate_fn=train_dataset.collate_fn)
+    else:
+        train_data_loader = torch.utils.data.DataLoader(train_dataset,
+                                                        batch_size=batch_size,
+                                                        shuffle=True,
+                                                        pin_memory=True,
+                                                        num_workers=nw,
+                                                        collate_fn=train_dataset.collate_fn)
 
     # load validation data set
     # VOCdevkit -> VOC2012 -> ImageSets -> Main -> val.txt
-    val_data_set = VOC2012DataSet(VOC_root, data_transform["val"], "val.txt")
-    val_data_set_loader = torch.utils.data.DataLoader(val_data_set,
-                                                      batch_size=batch_size,
+    val_dataset = VOCDataSet(VOC_root, "2012", data_transform["val"], "val.txt")
+    val_data_set_loader = torch.utils.data.DataLoader(val_dataset,
+                                                      batch_size=1,
                                                       shuffle=False,
                                                       pin_memory=True,
                                                       num_workers=nw,
-                                                      collate_fn=train_data_set.collate_fn)
+                                                      collate_fn=val_dataset.collate_fn)
 
     # create model num_classes equal background + 20 classes
-    model = create_model(num_classes=parser_data.num_classes + 1, device=device)
+    model = create_model(num_classes=parser_data.num_classes + 1)
     # print(model)
 
     model.to(device)
@@ -96,7 +115,7 @@ def main(parser_data):
 
     # 如果指定了上次训练保存的权重文件地址，则接着上次结果接着训练
     if parser_data.resume != "":
-        checkpoint = torch.load(parser_data.resume, map_location=device)
+        checkpoint = torch.load(parser_data.resume, map_location='cpu')
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
@@ -173,6 +192,7 @@ if __name__ == "__main__":
     # 训练的batch size
     parser.add_argument('--batch_size', default=8, type=int, metavar='N',
                         help='batch size when training.')
+    parser.add_argument('--aspect-ratio-group-factor', default=3, type=int)
 
     args = parser.parse_args()
     print(args)
