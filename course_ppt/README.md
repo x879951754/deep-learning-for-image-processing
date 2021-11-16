@@ -13,6 +13,7 @@
 - **EfficientNet_v2** 链接：https://pan.baidu.com/s/1tesrgY4CHLmq6P7s7TcHCw  密码：y2kz
 - **Transformer** 链接：https://pan.baidu.com/s/1DE6RDySr7NS0HQ35gBqP_g 密码：y9e7
 - **Vision Transformer** 链接：https://pan.baidu.com/s/1wzpHG8EK5gxg6UCMscYqMw 密码：cm1m
+- **Swin Transformer** 链接：https://pan.baidu.com/s/1O6XEEZUb6B6AGYON7-EOgA 密码：qkrn
 - **ConfusionMatrix** 链接: https://pan.baidu.com/s/1EtKzHkZyv2XssYtqmGYCLg  密码: uoo5
 
 
@@ -31,3 +32,7 @@
 - **coco数据集简介** 链接：https://pan.baidu.com/s/1HfCvjt-8o9j5a916IYNVjw  密码：6rec 
 
 
+## 图像分割网络相关
+- **语义分割前言** 链接：https://pan.baidu.com/s/1cwxe2wbaA_2DqNYADq3myA 密码：zzij
+- **转置卷积** 链接：https://pan.baidu.com/s/1A8688168fuWHyxJQtzupHw 密码：pgnf
+- **FCN** 链接：https://pan.baidu.com/s/1XLUneTLrdUyDAiV6kqi9rw 密码：126a

@@ -5,7 +5,7 @@ import datetime
 import torch
 
 from src import fcn_resnet50
-from train_utils import train_one_epoch, evaluate
+from train_utils import train_one_epoch, evaluate, create_lr_scheduler
 from my_dataset import VOCSegmentation
 import transforms as T
 
@@ -48,21 +48,23 @@ def get_transform(train):
     return SegmentationPresetTrain(base_size, crop_size) if train else SegmentationPresetEval(base_size)
 
 
-def create_model(aux, num_classes):
+def create_model(aux, num_classes, pretrain=True):
     model = fcn_resnet50(aux=aux, num_classes=num_classes)
-    weights_dict = torch.load("./fcn_resnet50_coco.pth", map_location='cpu')
 
-    if num_classes != 21:
-        # 官方提供的预训练权重是21类(包括背景)
-        # 如果训练自己的数据集，将和类别相关的权重删除，防止权重shape不一致报错
-        for k in list(weights_dict.keys()):
-            if "classifier.4" in k:
-                del weights_dict[k]
+    if pretrain:
+        weights_dict = torch.load("./fcn_resnet50_coco.pth", map_location='cpu')
 
-    missing_keys, unexpected_keys = model.load_state_dict(weights_dict, strict=False)
-    if len(missing_keys) != 0 or len(unexpected_keys) != 0:
-        print("missing_keys: ", missing_keys)
-        print("unexpected_keys: ", unexpected_keys)
+        if num_classes != 21:
+            # 官方提供的预训练权重是21类(包括背景)
+            # 如果训练自己的数据集，将和类别相关的权重删除，防止权重shape不一致报错
+            for k in list(weights_dict.keys()):
+                if "classifier.4" in k:
+                    del weights_dict[k]
+
+        missing_keys, unexpected_keys = model.load_state_dict(weights_dict, strict=False)
+        if len(missing_keys) != 0 or len(unexpected_keys) != 0:
+            print("missing_keys: ", missing_keys)
+            print("unexpected_keys: ", unexpected_keys)
 
     return model
 
@@ -73,15 +75,22 @@ def main(args):
     # segmentation nun_classes + background
     num_classes = args.num_classes + 1
 
+    # 用来保存训练以及验证过程中信息
+    results_file = "results{}.txt".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+    # VOCdevkit -> VOC2012 -> ImageSets -> Segmentation -> train.txt
     train_dataset = VOCSegmentation(args.data_path,
+                                    year="2012",
                                     transforms=get_transform(train=True),
                                     txt_name="train.txt")
 
+    # VOCdevkit -> VOC2012 -> ImageSets -> Segmentation -> val.txt
     val_dataset = VOCSegmentation(args.data_path,
+                                  year="2012",
                                   transforms=get_transform(train=False),
                                   txt_name="val.txt")
 
-    num_workers = 8
+    num_workers = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=batch_size,
                                                num_workers=num_workers,
@@ -112,9 +121,8 @@ def main(args):
         lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay
     )
 
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lambda x: (1 - x / args.epochs) ** 0.9)
+    # 创建学习率更新策略，这里是每个step更新一次(不是每个epoch)
+    lr_scheduler = create_lr_scheduler(optimizer, len(train_loader), args.epochs, warmup=True)
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu')
@@ -125,13 +133,19 @@ def main(args):
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        train_one_epoch(model, optimizer, train_loader, device, epoch,
-                        warmup=True, print_freq=args.print_freq)
-
-        lr_scheduler.step()
+        mean_loss, lr = train_one_epoch(model, optimizer, train_loader, device, epoch,
+                                        lr_scheduler=lr_scheduler, print_freq=args.print_freq)
 
         confmat = evaluate(model, val_loader, device=device, num_classes=num_classes)
-        print(confmat)
+        val_info = str(confmat)
+        print(val_info)
+        # write into txt
+        with open(results_file, "a") as f:
+            # 记录每个epoch对应的train_loss、lr以及验证集各指标
+            train_info = f"[epoch: {epoch}]\n" \
+                         f"train_loss: {mean_loss:.4f}\n" \
+                         f"lr: {lr:.6f}\n"
+            f.write(train_info + val_info + "\n\n")
 
         save_file = {"model": model.state_dict(),
                      "optimizer": optimizer.state_dict(),
